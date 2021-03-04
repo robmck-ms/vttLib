@@ -78,8 +78,15 @@ OffsetComponent = namedtuple(
     "OffsetComponent",
     ["index", "x", "y", "round_to_grid", "use_my_metrics", "scaled_offset"],
 )
+SOffsetComponent = namedtuple(
+    "OffsetComponent",
+    ["index", "x", "y", "x_scale", "scale_01", "scale_10", "y_scale", "round_to_grid", "use_my_metrics", "scaled_offset"],
+)
 AnchorComponent = namedtuple(
     "AnchorComponent", ["index", "first", "second", "use_my_metrics", "scaled_offset"]
+)
+SAnchorComponent = namedtuple(
+    "AnchorComponent", ["index", "first", "second", "x_scale", "scale_01", "scale_10", "y_scale", "round_to_grid", "use_my_metrics", "scaled_offset"]
 )
 
 JUMP_INSTRUCTIONS = frozenset(["JMPR", "JROT", "JROF"])
@@ -196,21 +203,35 @@ def transform(tokens, components=None):
         elif mnemonic == "UNSCALEDCOMPONENTOFFSET":
             scaled_offset = False
             continue
-        elif mnemonic == "OFFSET":
+        elif mnemonic in ("OFFSET", "SOFFSET"):
             round_to_grid = t.flags == "1"
-            index, x, y = t.stack_items
-            component = OffsetComponent(
-                index, x, y, round_to_grid, use_my_metrics, scaled_offset
-            )
+            if mnemonic == "OFFSET":
+                index, x, y = t.stack_items
+                component = OffsetComponent(
+                    index, x, y, round_to_grid, use_my_metrics, scaled_offset
+                )
+            else:
+                index, x, y, x_scale, scale_01, scale_10, y_scale = t.stack_items
+                component = SOffsetComponent(
+                    index, x, y, x_scale, scale_01, scale_10, y_scale, round_to_grid, use_my_metrics, scaled_offset
+                )
+
             components.append(component)
             use_my_metrics = round_to_grid = False
             scaled_offset = None
             continue
-        elif mnemonic == "ANCHOR":
-            index, first, second = t.stack_items
-            component = AnchorComponent(
-                index, first, second, use_my_metrics, scaled_offset
-            )
+        elif mnemonic in ("ANCHOR", "SANCHOR"):
+            if mnemonic == "ANCHOR":
+                index, first, second = t.stack_items
+                component = AnchorComponent(
+                    index, first, second, use_my_metrics, scaled_offset
+                )
+            else:
+                round_to_grid = t.flags == "1"
+                index, first, second = t.stack_items
+                component = AnchorComponent(
+                    index, first, second, x_scale, scale_01, scale_10, y_scale, round_to_grid, use_my_metrics, scaled_offset
+                )
             components.append(component)
             use_my_metrics = False
             scaled_offset = None
@@ -557,16 +578,32 @@ def check_composite_info(name, glyph, vtt_components, glyph_order, check_flags=F
                     "Component %d in '%s' has wrong y offset: expected"
                     " %d, found %d." % (i, name, comp.y, vttcomp.y)
                 )
-            if check_flags and (
-                (comp.flags & ROUND_XY_TO_GRID and not vttcomp.round_to_grid)
-                or (not comp.flags & ROUND_XY_TO_GRID and vttcomp.round_to_grid)
-            ):
+        if hasattr(comp, "transform"):
+            if not hasattr(vttcomp, 'x_scale'):
                 raise VTTLibInvalidComposite(
-                    "Component %d in '%s' has wrong 'ROUND_XY_TO_GRID' flag."
-                    % (i, name)
+                    "Component %d in '%s' does not have expected scale transform:"
+                    "expected %s" % (i, name, str(comp.transform))
                 )
+            else:
+                vtt_transform = [
+                    [vttcomp.x_scale, vttcomp.scale_01],
+                    [vttcomp.scale_10, vttcomp.y_scale],
+                ]
+                (x_scale, scale_01), (scale_10, y_scale) = comp.transform
+                if comp.transform != vtt_transform:
+                    raise VTTLibInvalidComposite(
+                        "Component %d in '%s' has wrong transform: expected"
+                        " %s, found %s." % (i, name, str(comp.transform), str(vtt_transform))
+                    )
         if not check_flags:
             continue
+        if (comp.flags & ROUND_XY_TO_GRID and not vttcomp.round_to_grid) or (
+            not comp.flags & ROUND_XY_TO_GRID and vttcomp.round_to_grid
+        ):
+            raise VTTLibInvalidComposite(
+                "Component %d in '%s' has wrong 'ROUND_XY_TO_GRID' flag."
+                % (i, name)
+            )
         if (comp.flags & USE_MY_METRICS and not vttcomp.use_my_metrics) or (
             not comp.flags & USE_MY_METRICS and vttcomp.use_my_metrics
         ):
@@ -644,14 +681,27 @@ def write_composite_info(glyph, glyph_order, data="", vtt_version=6):
                 instructions.append("UNSCALEDCOMPONENTOFFSET[]\n")
         index = glyph_order.index(comp.glyphName)
         if hasattr(comp, "firstPt"):
-            instructions.append(
-                "ANCHOR[], %d, %d, %d\n" % (index, comp.firstPt, comp.secondPt)
-            )
+            if hasattr(comp, "transform"):
+                (x_scale, scale_01), (scale_10, y_scale) = comp.transform
+                flag = "R" if comp.flags & ROUND_XY_TO_GRID else "r"
+                instructions.append(
+                    "SANCHOR[%s], %d, %d, %d, %d, %d, %d, %d\n" % (flag, index, comp.firstPt, comp.secondPt, x_scale, scale_01, scale_10, y_scale)
+                )
+            else:
+                instructions.append(
+                    "ANCHOR[], %d, %d, %d\n" % (index, comp.firstPt, comp.secondPt)
+                )
         else:
             flag = "R" if comp.flags & ROUND_XY_TO_GRID else "r"
-            instructions.append(
-                "OFFSET[%s], %d, %d, %d\n" % (flag, index, comp.x, comp.y)
-            )
+            if hasattr(comp, "transform"):
+                (x_scale, scale_01), (scale_10, y_scale) = comp.transform
+                instructions.append(
+                    "SOFFSET[%s], %d, %d, %d, %d, %d, %d, %d\n" % (flag, index, comp.x, comp.y, x_scale, scale_01, scale_10, y_scale)
+                )
+            else:
+                instructions.append(
+                    "OFFSET[%s], %d, %d, %d\n" % (flag, index, comp.x, comp.y)
+                )
     return head, "".join(instructions), tail
 
 
