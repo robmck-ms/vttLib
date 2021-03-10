@@ -62,7 +62,7 @@ signed_integer = (
 
 variable = Word(alphas, bodyChars=alphanums)
 
-stack_item = Suppress(",") + (signed_integer | Suppress("*") | variable)
+stack_item = Suppress(",") + (pyparsing_common.real | signed_integer |  Suppress("*") | variable)
 
 flag = oneOf(list(VTT_MNEMONIC_FLAGS.keys()))
 # convert flag to binary string

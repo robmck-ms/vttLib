@@ -6,6 +6,7 @@ import re
 from collections import OrderedDict, defaultdict, deque, namedtuple
 
 import ufoLib2
+from fontTools.misc.fixedTools import floatToFixedToFloat
 from fontTools.ttLib import TTFont, TTLibError, newTable
 from fontTools.ttLib.tables._g_l_y_f import (
     ROUND_XY_TO_GRID,
@@ -602,11 +603,12 @@ def check_composite_info(name, glyph, vtt_components, glyph_order, check_flags=F
                     "expected %s" % (i, name, str(comp.transform))
                 )
             else:
+                # We have to round trip all of VTT's values through 2.14 fixed
+                # point to properly compare to the glyf table entry.
                 vtt_transform = [
-                    [vttcomp.x_scale, vttcomp.scale_01],
-                    [vttcomp.scale_10, vttcomp.y_scale],
+                    [floatToFixedToFloat(vttcomp.x_scale, 14), floatToFixedToFloat(vttcomp.scale_01, 14)],
+                    [floatToFixedToFloat(vttcomp.scale_10, 14), floatToFixedToFloat(vttcomp.y_scale, 14)],
                 ]
-                (x_scale, scale_01), (scale_10, y_scale) = comp.transform
                 if comp.transform != vtt_transform:
                     raise VTTLibInvalidComposite(
                         "Component %d in '%s' has wrong transform: expected"
